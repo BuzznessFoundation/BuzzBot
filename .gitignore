@@ -1,0 +1,12 @@
+# 🔐 Claves de API (no subir nunca)
+.env
+.env/
+
+# 🧠 Modelo LLM local
+models/
+*.gguf
+
+# 📦 Dependencias
+__pycache__/
+*.pyc
+*.log

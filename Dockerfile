@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     git \
     wget \
-    ca-certificates \
+    libopenblas-dev \
+    libomp-dev \
     && apt-get clean
 
 # Instalar dependencias de Python
@@ -19,10 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copiar el código fuente
 COPY . .
 
-# Descargar el modelo TinyLlama
-RUN mkdir -p models && \
-    wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q3_K_M.gguf \
-         -O models/tinyllama-1.1b-chat-v1.0.Q3_K_M.gguf
+# Copiar variable de entorno
+COPY .env .env
 
 EXPOSE 8000
 
