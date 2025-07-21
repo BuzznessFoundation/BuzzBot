@@ -5,7 +5,16 @@ import logging
 import faiss
 import pickle
 from sentence_transformers import SentenceTransformer
-from utils import cargar_modelo, crear_respuesta
+
+from utils import (
+    cargar_modelo_local,
+    cargar_modelo_gemini,
+    crear_respuesta,
+    get_system_prompt,
+    es_pregunta_trivial,
+    USE_GEMINI,
+    VECTOR_STORE_DIR,
+)
 
 app = FastAPI(title="BuzzBot API")
 
@@ -19,24 +28,26 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Carga modelo LLM ---
+# Carga modelo (local o Gemini)
 try:
-    llm = cargar_modelo()
-    # Obtén la ventana de contexto de tu modelo
-    N_CTX = llm.n_ctx()  # por ejemplo 4096
-    logger.info(f"Modelo cargado. n_ctx={N_CTX}")
+    if USE_GEMINI:
+        llm = cargar_modelo_gemini()
+        N_CTX = 8192  # Ajustar según specs reales Gemini Flash
+    else:
+        llm = cargar_modelo_local()
+        N_CTX = 4096
+    logger.info(f"Modelo cargado correctamente. USE_GEMINI={USE_GEMINI}")
 except Exception as e:
     logger.error(f"Error al cargar el modelo: {e}")
     llm = None
     N_CTX = 0
 
-# --- Carga vector_store ---
-VECTOR_DIR = "vector_store"
+# Carga vector_store
 try:
-    index = faiss.read_index(f"{VECTOR_DIR}/index.faiss")
-    with open(f"{VECTOR_DIR}/chunks.pkl", "rb") as f:
+    index = faiss.read_index(str(VECTOR_STORE_DIR / "index.faiss"))
+    with open(VECTOR_STORE_DIR / "chunks.pkl", "rb") as f:
         chunks = pickle.load(f)
-    with open(f"{VECTOR_DIR}/metadata.pkl", "rb") as f:
+    with open(VECTOR_STORE_DIR / "metadata.pkl", "rb") as f:
         metadata = pickle.load(f)
     logger.info("Vector store cargado correctamente")
 except Exception as e:
@@ -47,26 +58,27 @@ except Exception as e:
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-def contar_tokens(texto) -> int:
-    if not isinstance(texto, str):
-        texto = str(texto)
-    try:
-        return len(llm.tokenize(texto.encode("utf-8")))  # ⚠️ .encode() a bytes
-    except Exception as e:
-        logger.error(f"Error al tokenizar: {e} | tipo: {type(texto)} | contenido: {texto[:100]}")
-        return 0
+def contar_tokens(texto: str) -> int:
+    if USE_GEMINI:
+        # Aproximación tokens Gemini: 1 token ≈ 4 caracteres
+        return len(texto) // 4
+    else:
+        try:
+            return len(llm.tokenize(texto.encode("utf-8")))
+        except Exception as e:
+            logger.error(f"Error tokenizando texto: {e}")
+            return 0
 
-def construir_contexto(fragmentos: list[str], max_ctx_tokens: int) -> str:
+def construir_contexto(fragmentos: list[str], max_tokens: int) -> str:
     contexto = ""
-    total = 0
+    total_tokens = 0
     for frag in fragmentos:
-        tokens = contar_tokens(frag)
-        if total + tokens > max_ctx_tokens:
+        tks = contar_tokens(frag)
+        if total_tokens + tks > max_tokens:
             break
         contexto += frag + "\n\n"
-        total += tokens
+        total_tokens += tks
     return contexto
-
 
 @app.post("/chat")
 async def chat(request: Request):
@@ -77,16 +89,17 @@ async def chat(request: Request):
             raise HTTPException(status_code=400, detail="Prompt vacío")
 
         if llm is None or index is None:
-            # fallback modo eco
             return {"respuesta": f"(modo eco) {pregunta}"}
 
-        # 1. Embed pregunta y recuperar top k documentos
+        # Preguntas triviales: responder rápido sin buscar en vector_store
+        if es_pregunta_trivial(pregunta):
+            return {"respuesta": "Hola! ¿En qué puedo ayudarte con la administración escolar?"}
+
         embedding = embedder.encode([pregunta], normalize_embeddings=True)
-        k = 5  # puedes ajustar
+        k = 5
         _, I = index.search(embedding, k)
         indices = I[0]
 
-        # 2. Construir lista de fragmentos con metadatos
         fragmentos = []
         for i in indices:
             tipo = "Documento"
@@ -94,41 +107,27 @@ async def chat(request: Request):
             texto = chunks[i]
             fragmentos.append(f"[{tipo}] ({fuente}): {texto}")
 
-        # 3. Calcular presupuesto de tokens para contexto
-        reserved = 512  # tokens que dejamos para la respuesta
-        max_ctx = N_CTX - reserved
-        contexto = construir_contexto(fragmentos, max_ctx)
+        reserved_tokens = 512
+        max_context_tokens = N_CTX - reserved_tokens
+        contexto = construir_contexto(fragmentos, max_context_tokens)
 
-        # 4. Prompt base más desarrollado
-        system_msg = (
-            "Eres un asistente especializado en la administración de escuelas públicas en Chile. "
-            "Tu tarea es responder con precisión y citar las fuentes (nombres de archivos) cuando corresponda. "
-            "Las preguntas pueden versar sobre leyes, reglamentos, oficios, protocolos y buenas prácticas.\n"
-            "Si no sabes la respuesta, admite desconocimiento."
+        system_prompt = get_system_prompt()
+
+        # Crear prompt separado para Gemini y local
+        prompt = (
+            f"Contextos disponibles:\n{contexto}\n\n"
+            f"Pregunta:\n{pregunta}\n\n"
+            f"Respuesta clara y precisa:"
         )
 
-        user_msg = (
-            f"CONTEXTOS DISPONIBLES:\n{contexto}\n\n"
-            f"PREGUNTA:\n{pregunta}\n\n"
-            "RESPUESTA (clara y precisa):"
+        respuesta = crear_respuesta(
+            llm,
+            prompt=prompt,
+            system_msg=system_prompt,
+            max_tokens=512
         )
 
-        # 5. Llamada al modelo con formato chatml
-        messages = [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
-        ]
-
-        logger.info(f"Prompt final tokens: {contar_tokens(user_msg) + contar_tokens(system_msg)}")
-        logger.info(f"System msg: {system_msg[:200]}")
-        logger.info(f"User msg: {user_msg[:200]}")
-
-        respuesta = crear_respuesta(llm, prompt)
         return {"respuesta": respuesta}
-
-
-        resp = output["choices"][0]["message"]["content"].strip()
-        return {"respuesta": resp}
 
     except Exception as e:
         logger.error(f"Error en /chat: {e}")
