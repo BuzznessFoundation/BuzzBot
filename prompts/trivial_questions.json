@@ -1,0 +1,25 @@
+{
+  "saludos": [
+    "hola",
+    "buenos días",
+    "buenas tardes",
+    "buenas noches",
+    "hi",
+    "hello"
+  ],
+  "preguntas_buzzbot": [
+    "qué es buzzbot",
+    "quién eres",
+    "quien eres",
+    "qué puedes hacer",
+    "qué haces",
+    "quién sos",
+    "quien sos",
+    "que es esto"
+  ],
+  "respuestas": {
+    "saludos": "¡Hola! Soy BuzzBot, tu asistente para temas de administración escolar. Puedes preguntarme sobre leyes, normativas, protocolos y más. ¿En qué te puedo ayudar hoy?",
+    "preguntas_buzzbot": "BuzzBot es un chatbot especializado en responder preguntas sobre la administración de escuelas públicas en Chile, incluyendo leyes, protocolos y normativas escolares."
+  },
+  "mensaje_corto": "Tu mensaje es muy corto para entenderlo bien. Por favor, formula tu pregunta con más detalles para que pueda ayudarte mejor."
+}
