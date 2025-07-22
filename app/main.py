@@ -2,19 +2,17 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
-import faiss
-import pickle
 from sentence_transformers import SentenceTransformer
 
-from utils import (
+from app.utils import (
     cargar_modelo_local,
     cargar_modelo_gemini,
     crear_respuesta,
     get_system_prompt,
     es_pregunta_trivial,
     USE_GEMINI,
-    VECTOR_STORE_DIR,
 )
+from app.rag import cargar_vector_store, construir_contexto_por_tokens
 
 app = FastAPI(title="BuzzBot API")
 
@@ -28,27 +26,17 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Carga modelo (local o Gemini)
 try:
-    if USE_GEMINI:
-        llm = cargar_modelo_gemini()
-        N_CTX = 8192  # Ajustar según specs reales Gemini Flash
-    else:
-        llm = cargar_modelo_local()
-        N_CTX = 4096
+    llm = cargar_modelo_gemini() if USE_GEMINI else cargar_modelo_local()
+    N_CTX = 8192 if USE_GEMINI else 4096
     logger.info(f"Modelo cargado correctamente. USE_GEMINI={USE_GEMINI}")
 except Exception as e:
     logger.error(f"Error al cargar el modelo: {e}")
     llm = None
     N_CTX = 0
 
-# Carga vector_store
 try:
-    index = faiss.read_index(str(VECTOR_STORE_DIR / "index.faiss"))
-    with open(VECTOR_STORE_DIR / "chunks.pkl", "rb") as f:
-        chunks = pickle.load(f)
-    with open(VECTOR_STORE_DIR / "metadata.pkl", "rb") as f:
-        metadata = pickle.load(f)
+    index, chunks, metadata = cargar_vector_store()
     logger.info("Vector store cargado correctamente")
 except Exception as e:
     logger.error(f"Error al cargar vector store: {e}")
@@ -56,29 +44,16 @@ except Exception as e:
     chunks = []
     metadata = []
 
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+embedder = SentenceTransformer("all-mpnet-base-v2")
 
 def contar_tokens(texto: str) -> int:
     if USE_GEMINI:
-        # Aproximación tokens Gemini: 1 token ≈ 4 caracteres
         return len(texto) // 4
-    else:
-        try:
-            return len(llm.tokenize(texto.encode("utf-8")))
-        except Exception as e:
-            logger.error(f"Error tokenizando texto: {e}")
-            return 0
-
-def construir_contexto(fragmentos: list[str], max_tokens: int) -> str:
-    contexto = ""
-    total_tokens = 0
-    for frag in fragmentos:
-        tks = contar_tokens(frag)
-        if total_tokens + tks > max_tokens:
-            break
-        contexto += frag + "\n\n"
-        total_tokens += tks
-    return contexto
+    try:
+        return len(llm.tokenize(texto.encode("utf-8")))
+    except Exception as e:
+        logger.error(f"Error tokenizando texto: {e}")
+        return 0
 
 @app.post("/chat")
 async def chat(request: Request):
@@ -91,42 +66,26 @@ async def chat(request: Request):
         if llm is None or index is None:
             return {"respuesta": f"(modo eco) {pregunta}"}
 
-        # Preguntas triviales: responder rápido sin buscar en vector_store
         if es_pregunta_trivial(pregunta):
             return {"respuesta": "Hola! ¿En qué puedo ayudarte con la administración escolar?"}
 
         embedding = embedder.encode([pregunta], normalize_embeddings=True)
-        k = 5
-        _, I = index.search(embedding, k)
+        _, I = index.search(embedding, 5)
         indices = I[0]
 
-        fragmentos = []
-        for i in indices:
-            tipo = "Documento"
-            fuente = metadata[i]
-            texto = chunks[i]
-            fragmentos.append(f"[{tipo}] ({fuente}): {texto}")
-
-        reserved_tokens = 512
-        max_context_tokens = N_CTX - reserved_tokens
-        contexto = construir_contexto(fragmentos, max_context_tokens)
+        max_context_tokens = N_CTX - 512
+        contexto = construir_contexto_por_tokens(
+            chunks, metadata, indices, contar_tokens, max_context_tokens
+        )
 
         system_prompt = get_system_prompt()
-
-        # Crear prompt separado para Gemini y local
         prompt = (
             f"Contextos disponibles:\n{contexto}\n\n"
             f"Pregunta:\n{pregunta}\n\n"
             f"Respuesta clara y precisa:"
         )
 
-        respuesta = crear_respuesta(
-            llm,
-            prompt=prompt,
-            system_msg=system_prompt,
-            max_tokens=512
-        )
-
+        respuesta = crear_respuesta(llm, prompt=prompt, system_msg=system_prompt)
         return {"respuesta": respuesta}
 
     except Exception as e:

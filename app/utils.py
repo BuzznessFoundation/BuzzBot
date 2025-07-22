@@ -1,22 +1,16 @@
+# app/utils.py
 import os
 import json
-from pathlib import Path
 import logging
+from google.generativeai import GenerativeModel, configure as configure_genai
+from llama_cpp import Llama
+from app.config import SYSTEM_PROMPT_FILE, TRIVIAL_QUESTIONS_FILE, VECTOR_STORE_DIR, MODEL_PATH
 
 logger = logging.getLogger(__name__)
 
-# Leer variables de entorno
 USE_GEMINI = os.getenv("USE_GEMINI", "False").lower() == "true"
 API_KEY = os.getenv("API_KEY")
 MODEL_VARIANT = os.getenv("MODEL_VARIANT", "gemini-1.5-flash")
-
-# Paths para volúmenes montados
-PROMPTS_DIR = Path("prompts")
-CONFIG_DIR = Path("config")
-VECTOR_STORE_DIR = Path("vector_store")
-
-SYSTEM_PROMPT_FILE = PROMPTS_DIR / "system_prompt.txt"
-TRIVIAL_QUESTIONS_FILE = CONFIG_DIR / "trivial_questions.json"
 
 def get_system_prompt() -> str:
     if SYSTEM_PROMPT_FILE.exists():
@@ -37,17 +31,11 @@ def es_pregunta_trivial(pregunta: str) -> bool:
     pregunta_lower = pregunta.lower()
     return any(t in pregunta_lower for t in trivias)
 
-# --- Modelos ---
-
-from llama_cpp import Llama
-from google.generativeai import GenerativeModel, configure as configure_genai
-
 def cargar_modelo_local():
-    modelo_path = VECTOR_STORE_DIR / "models" / "phi-3-mini-128k-instruct.Q4_K_M.gguf"
-    if not modelo_path.exists():
-        raise FileNotFoundError(f"No se encontró el modelo en {modelo_path}")
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"No se encontró el modelo en {MODEL_PATH}")
     return Llama(
-        model_path=str(modelo_path),
+        model_path=str(MODEL_PATH),
         n_ctx=4096,
         n_threads=22,
         chat_format="chatml"
