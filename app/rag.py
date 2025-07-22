@@ -24,3 +24,37 @@ def construir_contexto_por_tokens(chunks, metadata, indices, contar_tokens, max_
         contexto += fragmento + "\n\n"
         total += tokens
     return contexto
+
+def prioridad_tipo(tipo: str) -> int:
+    orden = {
+        "ley": 1,
+        "reglamento": 2,
+        "oficio": 3,
+        "protocolo": 4,
+        "guia": 5,
+        "otro": 6
+    }
+    return orden.get(tipo.lower(), 99)
+
+def reordenar_chunks(chunks: list[str], metadatos: list[dict], indices: list[int], top_k: int = 10) -> list[str]:
+    seleccionados = []
+
+    for i in indices:
+        meta = metadatos[i]
+        chunk = chunks[i]
+        tipo = meta.get("tipo", "otro")
+        prioridad = prioridad_tipo(tipo)
+
+        seleccionados.append({
+            "chunk": chunk,
+            "tipo": tipo,
+            "fuente": meta.get("fuente", ""),
+            "prioridad": prioridad
+        })
+
+    # Ordenar por prioridad
+    seleccionados.sort(key=lambda x: x["prioridad"])
+
+    # Retornar los top_k mejores
+    return [f"[{x['tipo'].upper()}] ({x['fuente']}): {x['chunk']}" for x in seleccionados[:top_k]]
+

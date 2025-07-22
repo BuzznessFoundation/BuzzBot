@@ -1,8 +1,9 @@
+from sentence_transformers import SentenceTransformer
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from app.rag import reordenar_chunks
 import logging
-from sentence_transformers import SentenceTransformer
 
 from app.utils import (
     cargar_modelo_local,
@@ -44,7 +45,7 @@ except Exception as e:
     chunks = []
     metadata = []
 
-embedder = SentenceTransformer("all-mpnet-base-v2")
+embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
 def contar_tokens(texto: str) -> int:
     if USE_GEMINI:
@@ -70,13 +71,19 @@ async def chat(request: Request):
             return {"respuesta": "Hola! ¿En qué puedo ayudarte con la administración escolar?"}
 
         embedding = embedder.encode([pregunta], normalize_embeddings=True)
-        _, I = index.search(embedding, 5)
+        _, I = index.search(embedding, 15)
         indices = I[0]
 
+        fragmentos = reordenar_chunks(chunks, metadata, indices, top_k=10)
         max_context_tokens = N_CTX - 512
-        contexto = construir_contexto_por_tokens(
-            chunks, metadata, indices, contar_tokens, max_context_tokens
-        )
+        contexto = ""
+        total_tokens = 0
+        for frag in fragmentos:
+            tokens = contar_tokens(frag)
+            if total_tokens + tokens > max_context_tokens:
+                break
+            contexto += frag + "\n\n"
+            total_tokens += tokens
 
         system_prompt = get_system_prompt()
         prompt = (
