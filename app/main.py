@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+from app.preprocessing import preprocess_user_input
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
@@ -17,35 +18,29 @@ from app.utils import (
 from app.rag import (
     reordenar_chunks,
     cargar_vector_store,
-    construir_contexto_por_tokens  # si lo usas
+    construir_contexto_por_tokens
 )
 
-# Inicializar FastAPI
 app = FastAPI(title="BuzzBot API")
 
-# CORS (ajustable según el frontend)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Cargar modelo (local o Gemini)
 try:
     llm = cargar_modelo_gemini() if USE_GEMINI else cargar_modelo_local()
-    N_CTX = 8192 if USE_GEMINI else 4096
+    N_CTX = 16384 if USE_GEMINI else 4096
     logger.info(f"✅ Modelo cargado correctamente. USE_GEMINI={USE_GEMINI}")
 except Exception as e:
     logger.error(f"❌ Error al cargar el modelo: {traceback.format_exc()}")
     llm = None
     N_CTX = 0
 
-# Cargar vector store
 try:
     index, chunks, metadata = cargar_vector_store()
     logger.info(f"✅ Vector store cargado correctamente con {len(chunks)} chunks")
@@ -55,7 +50,6 @@ except Exception as e:
     chunks = []
     metadata = []
 
-# Cargar embedder
 try:
     embedder = SentenceTransformer("all-mpnet-base-v2")
     logger.info("✅ Embedder cargado correctamente")
@@ -63,7 +57,6 @@ except Exception as e:
     logger.error(f"❌ Error al cargar embedder: {traceback.format_exc()}")
     embedder = None
 
-# Función de conteo de tokens
 def contar_tokens(texto: str) -> int:
     if USE_GEMINI:
         return len(texto) // 4
@@ -73,7 +66,6 @@ def contar_tokens(texto: str) -> int:
         logger.error(f"⚠️ Error tokenizando texto: {traceback.format_exc()}")
         return 0
 
-# Ruta principal del chat
 @app.post("/chat")
 async def chat(request: Request):
     try:
@@ -84,7 +76,6 @@ async def chat(request: Request):
 
         logger.info(f"📥 Pregunta recibida: {pregunta}")
 
-        # Modo eco si faltan componentes
         if llm is None:
             return {"respuesta": f"(modo eco: modelo no cargado) {pregunta}"}
         if index is None:
@@ -92,10 +83,15 @@ async def chat(request: Request):
         if embedder is None:
             return {"respuesta": f"(modo eco: embedder no cargado) {pregunta}"}
 
-        # Manejo de preguntas triviales
-        if es_pregunta_trivial(pregunta):
-            logger.info("🤖 Pregunta trivial detectada")
-            return {"respuesta": "Hola, soy BuzzBot, tu asistente en temas educativos. ¿Podrías especificar mejor qué necesitas?"}
+        logger.info("🧪 Ejecutando preprocesamiento...")
+        preproc_result = preprocess_user_input(pregunta)
+
+        if preproc_result["respuesta_previa"]:
+            logger.info("🤖 Intercepción por preprocesamiento (respuesta previa)")
+            return {"respuesta": preproc_result["respuesta_previa"]}
+
+        system_prompt = preproc_result["prompt_dinamico"]
+        logger.info(f"📌 Prompt dinámico aplicado según intención '{preproc_result['intencion']}'")
 
         logger.info("🔎 Generando embedding...")
         embedding = embedder.encode([pregunta], normalize_embeddings=True)
@@ -105,10 +101,15 @@ async def chat(request: Request):
         indices = I[0]
 
         logger.info("🧠 Reordenando fragmentos relevantes...")
-        fragmentos = reordenar_chunks(chunks, metadata, indices, top_k=10)
+        fragmentos = reordenar_chunks(
+            chunks, metadata, indices, pregunta=pregunta,
+            modo="local",  # o "llm" si estás usando Gemini
+            llm_model=llm if USE_GEMINI else None,
+            top_k=10
+        )
 
         logger.info("🧮 Construyendo contexto limitado por tokens...")
-        max_context_tokens = N_CTX - 512
+        max_context_tokens = N_CTX - 1024
         contexto = ""
         total_tokens = 0
         for frag in fragmentos:
@@ -120,7 +121,6 @@ async def chat(request: Request):
 
         logger.info(f"📏 Total tokens de contexto: {total_tokens}")
 
-        system_prompt = get_system_prompt()
         prompt = (
             f"Contextos disponibles:\n{contexto}\n\n"
             f"Pregunta:\n{pregunta}\n\n"
@@ -137,7 +137,6 @@ async def chat(request: Request):
         logger.error(f"❌ Error en /chat:\n{traceback.format_exc()}")
         return JSONResponse(status_code=500, content={"error": "Error interno del servidor"})
 
-# Ruta simple de verificación
 @app.get("/")
 async def root():
     return {

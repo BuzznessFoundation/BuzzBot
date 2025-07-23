@@ -1,6 +1,10 @@
 import faiss
 import pickle
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 from app.config import VECTOR_STORE_DIR
+from app.llm import crear_respuesta
+from typing import List, Literal
 
 def cargar_vector_store():
     try:
@@ -36,25 +40,57 @@ def prioridad_tipo(tipo: str) -> int:
     }
     return orden.get(tipo.lower(), 99)
 
-def reordenar_chunks(chunks: list[str], metadatos: list[dict], indices: list[int], top_k: int = 10) -> list[str]:
-    seleccionados = []
+def reordenar_chunks(
+    chunks: List[str],
+    metadata: List[dict],
+    indices: List[int],
+    pregunta: str,
+    modo: Literal["local", "llm"] = "local",
+    top_k: int = 10,
+    llm_model=None  # solo si modo='llm'
+) -> List[str]:
+    seleccionados = [chunks[i] for i in indices]
+    seleccionados_meta = [metadata[i] for i in indices]
 
-    for i in indices:
-        meta = metadatos[i]
-        chunk = chunks[i]
-        tipo = meta.get("tipo", "otro")
-        prioridad = prioridad_tipo(tipo)
+    if modo == "local":
+        return _rerank_local(pregunta, seleccionados, top_k)
+    elif modo == "llm":
+        return _rerank_llm(pregunta, seleccionados, llm_model, top_k)
+    else:
+        raise ValueError(f"Modo de reordenamiento no soportado: {modo}")
 
-        seleccionados.append({
-            "chunk": chunk,
-            "tipo": tipo,
-            "fuente": meta.get("fuente", ""),
-            "prioridad": prioridad
-        })
+def _rerank_local(pregunta: str, fragmentos: List[str], top_k: int) -> List[str]:
+    from sentence_transformers import SentenceTransformer
 
-    # Ordenar por prioridad
-    seleccionados.sort(key=lambda x: x["prioridad"])
+    model = SentenceTransformer("all-MiniLM-L6-v2")  # usa el mismo embedder del sistema
+    pregunta_emb = model.encode([pregunta], normalize_embeddings=True)
+    fragmentos_emb = model.encode(fragmentos, normalize_embeddings=True)
 
-    # Retornar los top_k mejores
-    return [f"[{x['tipo'].upper()}] ({x['fuente']}): {x['chunk']}" for x in seleccionados[:top_k]]
+    sims = cosine_similarity(pregunta_emb, fragmentos_emb)[0]
+    orden = np.argsort(sims)[::-1][:top_k]
 
+    return [fragmentos[i] for i in orden]
+
+def _rerank_llm(pregunta: str, fragmentos: List[str], llm_model, top_k: int) -> List[str]:
+    prompt = (
+        "Dada la siguiente pregunta:\n"
+        f"{pregunta}\n\n"
+        "Y los siguientes fragmentos:\n"
+    )
+    for i, frag in enumerate(fragmentos):
+        prompt += f"[{i}] {frag[:500]}...\n"
+
+    prompt += (
+        "\nIndica los índices (por ejemplo: 1,3,5) de los fragmentos más relevantes "
+        f"para responder esta pregunta. Máximo {top_k}."
+    )
+
+    respuesta = crear_respuesta(llm_model, prompt=prompt, system_msg="Eres un modelo experto en selección de contexto.")
+
+    try:
+        indices = [int(i.strip()) for i in respuesta.strip().split(",") if i.strip().isdigit()]
+        indices = indices[:top_k]
+    except:
+        indices = list(range(top_k))  # fallback
+
+    return [fragmentos[i] for i in indices if i < len(fragmentos)]
