@@ -13,6 +13,6 @@ services:
       - ./vector_store:/app/vector_store
       - ./prompts:/app/prompts
       - ./config:/app/config
-      - ./models:/app/vector_store/models
+      - ./models:/app/models
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped

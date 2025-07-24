@@ -3,7 +3,7 @@ import pickle
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from app.config import VECTOR_STORE_DIR
-from app.llm import crear_respuesta
+from app.utils import crear_respuesta
 from typing import List, Literal
 
 def cargar_vector_store():
