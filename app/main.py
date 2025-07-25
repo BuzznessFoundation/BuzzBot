@@ -1,12 +1,12 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
+from sentence_transformers import SentenceTransformer
 from app.preprocessing import preprocess_user_input
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 import traceback
 
-from sentence_transformers import SentenceTransformer
-
+from app.auth import get_api_key
 from app.utils import (
     cargar_modelo_local,
     cargar_modelo_gemini,
@@ -67,7 +67,8 @@ def contar_tokens(texto: str) -> int:
         return 0
 
 @app.post("/chat")
-async def chat(request: Request):
+async def chat(request: Request, api_key: str = Depends(get_api_key)):
+
     try:
         data = await request.json()
         pregunta = data.get("prompt", "").strip()
@@ -103,7 +104,7 @@ async def chat(request: Request):
         logger.info("🧠 Reordenando fragmentos relevantes...")
         fragmentos = reordenar_chunks(
             chunks, metadata, indices, pregunta=pregunta,
-            modo="local",  # o "llm" si estás usando Gemini
+            modo="local",
             llm_model=llm if USE_GEMINI else None,
             top_k=10
         )
@@ -145,4 +146,17 @@ async def root():
         "llm": llm is not None,
         "vector_store": index is not None,
         "chunks": len(chunks),
+    }
+
+@app.get("/health")
+async def health_check(api_key: str = Depends(get_api_key)):
+    return {
+        "status": "authenticated",
+        "modelo": "gemini" if USE_GEMINI else "local", 
+        "components": {
+            "llm": llm is not None,
+            "vector_store": index is not None,
+            "embedder": embedder is not None,
+            "chunks_count": len(chunks)
+        }
     }
