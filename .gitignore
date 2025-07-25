@@ -10,3 +10,9 @@ models/
 __pycache__/
 *.pyc
 *.log
+
+# 📂 Dataset
+vector_store/
+*.faiss
+*.plk
+
